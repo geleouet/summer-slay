@@ -183,21 +183,13 @@ public class Main {
 
 		default void startTurn(Monster m, World w) {};
 		
-		
+		default String description() {return "";};
 	}
 
-	public static class Monster {
+	public static class Monster extends Personnage {
 		String name;
-		int originPv;
 		
-		int pv;
-		int force;
-		int armure;
-		int vulnerability;
-		int faiblesse;
-
-		List<Effects> effects = new ArrayList<>();
-
+		int originPv;
 		private MonsterStrategy brain;
 
 		public Monster(String name, int pv, MonsterStrategy brain) {
@@ -235,26 +227,18 @@ public class Main {
 		return liste;
 	}
 	
-	public static class Heros {
+
+	public static class Personnage {
+
 		int pv;
 		int force;
 		int armure;
 		int vulnerability;
 		int faiblesse;
+
+		List<Effects> effects = new ArrayList<>();
+
 		
-		int energy;
-		int maxPv;
-		
-		int startEnergy = 3;
-		int gold = 50;
-
-		int handSize = 5;
-		List<Carte<?>> deck = new ArrayList<>();
-		List<Carte<?>> hand = new ArrayList<>();
-		List<Carte<?>> played = new ArrayList<>();
-		List<Carte<?>> retired = new ArrayList<>();
-
-
 		public void addDefense(int d) {
 			armure += d;
 		}
@@ -266,6 +250,22 @@ public class Main {
 		public void attack(int a) {
 			pv -= Math.max(0, a - armure) * (vulnerability > 0 ? 1.5 : 1.);
 		}
+	}
+	
+	
+	public static class Heros extends Personnage {
+		
+		int maxPv;
+		int energy;
+		int startEnergy = 3;
+		int gold = 50;
+		int handSize = 5;
+		
+		List<Carte<?>> deck = new ArrayList<>();
+		List<Carte<?>> hand = new ArrayList<>();
+		List<Carte<?>> played = new ArrayList<>();
+		List<Carte<?>> retired = new ArrayList<>();
+
 
 		public int attack(Monster m, int a) {
 			return (int) ((a + force) * (faiblesse == 0 ? 1 : 0.75));
@@ -414,12 +414,13 @@ public class Main {
 			endTurn = () -> {};
 		}
 		
-		public void chooseItem(ItemShop item) {
+		public void playChooseItem(ItemShop item) {
 			if (item.price() <= hero.gold) {
 				hero.gold -= item.price();
 				Playable<?> bought = item.buy(this);
 				currentPlayable = bought;
 				currentPlayable.type().handle(this);
+				endTurn.run();
 			}
 		}
 
@@ -769,16 +770,7 @@ public class Main {
 
 
 			shopItems = new ArrayList<>(createReward());
-			endTurn = () -> {};
-		}
-
-		public void chooseReward(int nextNode) {
-			if (nextNode != 0) {
-				Carte<?> chosen = hero.hand.get(nextNode - 1);
-				hero.hand.clear();
-				hero.deck.add(chosen);
-				state = WorldState.Map;
-			}
+			endTurn = () -> World.this.state = WorldState.Map;
 		}
 
 		public void playCard(Carte<?> carte) {
@@ -1160,8 +1152,30 @@ public class Main {
 			carte = ethereal ? carte.ethereal() : carte;
 			return carte;
 		}
+	}
+	
+	
+	enum ActionEffectType {
+		FORCE,
+		ARMURE,
+		VULNERABILITY,
+		FAIBLESSE,
+		;
+	}
+	
+	static class ActionEffect {
+		ActionEffectType type;
 		
 	}
+	
+	static class Action {
+		Personnage origin;
+		Personnage cible;
+		
+		List<ActionEffect> effects;
+	}
+	
+	
 	
 	static class WorldDeck {
 		
@@ -1285,11 +1299,11 @@ public class Main {
 			}
 			else if (world.inShop()) {
 				int nextNode = interact.next(world.shopItems.size()-1);
-				world.chooseItem(world.shopItems.get(nextNode));
+				world.playChooseItem(world.shopItems.get(nextNode));
 			}
 			else if (world.inChooseReward()) {
 				int nextNode = interact.next(world.shopItems.size()-1);
-				world.chooseItem(world.shopItems.get(nextNode));
+				world.playChooseItem(world.shopItems.get(nextNode));
 			}
 			else if (world.inFight()) {
 				int nextNode = interact.next(heros.hand.size()-1);
