@@ -46,25 +46,51 @@ public class Main {
 	static class Node {
 		String title;
 		private int h;
+		private int level;
 		NodeType type;
 		
+		Supplier<List<Monster>> monsters;
+		private Reward reward;
 		
-		public Node(String title, int h) {
+		public Node(String title, int level, int h) {
 			this.title = title;
 			this.h = h;
 			this.type = NodeType.MONSTER;
 		}
 
-
 		public Node type(NodeType type) {
 			this.type = type;
 			return this;
 		}
+
+		public List<Monster> monsters() {
+			return retrieveMonsters().get();
+		}
+
+		public Supplier<List<Monster>> retrieveMonsters() {
+			return monsters;
+		}
+
+		public Supplier<List<ItemShop>> retrieveItems() {
+			return reward.cartes;
+		}
+		
+		public List<ItemShop> items() {
+			return retrieveItems().get();
+		}
+		
+		public void setMonsters(Supplier<List<Monster>> retrieveMonsters) {
+			monsters = retrieveMonsters;
+		}
+		
+		public void setReward(Reward reward) {
+			this.reward = reward;
+		}
+		
 	}
 	
-	
-	
 
+	
 	final static Random random = new Random(16486744);
 	static int random(int n) {
 		return random.nextInt(n);
@@ -211,6 +237,11 @@ public class Main {
 			return name;
 		}
 
+		public void originPv(int pv) {
+			this.originPv = pv;
+			this.pv = pv;
+		}
+
 	}
 	
 	/**
@@ -266,7 +297,6 @@ public class Main {
 		List<Carte<?>> played = new ArrayList<>();
 		List<Carte<?>> retired = new ArrayList<>();
 
-
 		public int attack(Monster m, int a) {
 			return (int) ((a + force) * (faiblesse == 0 ? 1 : 0.75));
 		}
@@ -303,17 +333,18 @@ public class Main {
 			tmp.forEach(c -> {if (!c.ephemere) deck.add(c);});
 		}
 
-		public void clearHand() {
+		public void clearHand(World world) {
 			for (Carte<?> carte : new ArrayList<>(hand)) {
-				clearCard(carte);
+				clearCard(carte, world);
 			}
 			hand.clear();
 		}
 
-		public void clearCard(Carte<?> carte) {
+		public void clearCard(Carte<?> carte, World world) {
 			if (carte.type == CarteType.GAME) {
 				return;
 			}
+			carte.action.discard(world);
 			if (!carte.ethereal) {
 				played.add(carte);
 			}
@@ -339,8 +370,6 @@ public class Main {
 	}
 	
 	public static class World {
-		List<Monster> monsters= new ArrayList<>();
-		Map<Monster, MonsterBrain> intentions = new HashMap<>();
 		
 		private MapWorld map;
 		private WorldDeck deck;
@@ -350,17 +379,18 @@ public class Main {
 		
 		private WorldState state;
 		private WorldState contextState;
+		private Runnable endTurn = () -> {};
 
 		private Carte<?> currentCard;
+		private Playable<?> currentPlayable;
 		private int cardsRemoved;
 		
+		List<Monster> monsters= new ArrayList<>();
+		Map<Monster, MonsterBrain> intentions = new HashMap<>();
 		List<BiConsumer<Carte<?>, World>> beforePlay = new ArrayList<>();
 		List<BiConsumer<Carte<?>, World>> afterPlay = new ArrayList<>();
-		
 		List<IntUnaryOperator> attackStack = new ArrayList<>();
 		List<ItemShop> shopItems = new ArrayList<>();
-		private Playable<?> currentPlayable;
-		private Runnable endTurn = () -> {};
 		
 		
 		public World(MapWorld map, Heros heros, WorldDeck deck) {
@@ -394,29 +424,32 @@ public class Main {
 		public void moveTo(Node node) {
 			position = node;
 			if (position.type == NodeType.MONSTER) {
-				monsters = new ArrayList<>(createMonsters());
+				monsters = new ArrayList<>(position.monsters());
 				startFight();
 				startTurn();
 			}
-			if (position.type == NodeType.ELITE) {
-				monsters = new ArrayList<>(createEliteMonsters());
+			else if (position.type == NodeType.ELITE) {
+				monsters = new ArrayList<>(position.monsters());
 				startFight();
 				startTurn();
 			}
-			if (position.type == NodeType.SHOP) {
+			else if (position.type == NodeType.SHOP) {
+				shopItems = new ArrayList<>(position.items());
 				startShop();
+			}
+			else if (position.type == NodeType.REPOS) {
+				hero.pv = Math.min(hero.maxPv, hero.pv + (hero.maxPv / 3+2));
 			}
 		}
 
 		public void startShop() {
 			state = WorldState.Shop;
-			shopItems = new ArrayList<>(createShop());
 			endTurn = () -> {};
 		}
 		
 		public void playChooseItem(ItemShop item) {
-			if (item.price() <= hero.gold) {
-				hero.gold -= item.price();
+			if (item.price(this) <= hero.gold) {
+				hero.gold -= item.price(this);
 				Playable<?> bought = item.buy(this);
 				currentPlayable = bought;
 				currentPlayable.type().handle(this);
@@ -435,237 +468,8 @@ public class Main {
 			}
 		}
 		
-		private List<ItemShop> createReward() {
-			List<Carte<?>> carteList = shuffle(deck.nextDeck());
-			List<ItemShop> shop = new ArrayList<>();
-			shop.add(new ItemShop() {
-				
-
-				@Override
-				public int price() {
-					return 0;
-				}
-				
-				@Override
-				public Carte<?> description() {
-					return new Carte<Carte<?>>(-1, CarteType.GAME, 0, CarteClass.GAME, "Aucune", null);
-				}
-				
-				@Override
-				public Playable<?> buy(World world) {
-					return new Playable<World>() {
-
-						@Override
-						public boolean play(World world, Context<World> context) {
-							world.state = WorldState.Map;
-							return true;
-						}
-
-						@Override
-						public ContextType type() {
-							return ContextType.SOLO;
-						}};
-				
-				}
-			});
-			
-			for (int i = 0; i < 3; i++) {
-				Carte<?> carte = carteList.get(i);
-				shop.add(ItemShop.carte(0, carte));
-			}
-			
-			return shop;
-		}
 		
-		private List<ItemShop> createShop() {
-			List<Carte<?>> carteList = shuffle(deck.nextDeck());
-			List<ItemShop> shop = new ArrayList<>();
-			shop.add(new ItemShop() {
-				
-
-				@Override
-				public int price() {
-					return 0;
-				}
-				
-				@Override
-				public Carte<?> description() {
-					return new Carte<Carte<?>>(-1, CarteType.GAME, 0, CarteClass.GAME, "Quitter la boutique", null);
-				}
-				
-				@Override
-				public Playable<?> buy(World world) {
-					return new Playable<World>() {
-
-						@Override
-						public boolean play(World world, Context<World> context) {
-							world.state = WorldState.Map;
-							return true;
-						}
-
-						@Override
-						public ContextType type() {
-							return ContextType.SOLO;
-						}};
-				
-				}
-			});
-			
-			for (int i = 0; i < 6; i++) {
-				Carte<?> carte = carteList.get(i);
-				int price = (int) (carte.classe.ordinal() * 25 * (random(100) + 50) / 100.);
-				shop.add(ItemShop.carte(price, carte));
-			}
-			shop.add(new ItemShop() {
-				
-
-				@Override
-				public int price() {
-					return 25 * (World.this.cardsRemoved + 1);
-				}
-				
-				@Override
-				public Carte<?> description() {
-					return new Carte<Carte<?>>(-1, CarteType.POWER, 0, CarteClass.GAME, "Enlève une carte", null);
-				}
-				
-				@Override
-				public Playable<?> buy(World world) {
-					return new Playable<Carte<?>>() {
-
-
-						@Override
-						public ContextType type() {
-							return ContextType.DECK;
-						}
-
-						@Override
-						public boolean play(World world, Context<Carte<?>> context) {
-							Carte<?> toRemove = context.from(world);
-							world.hero.deck.remove(toRemove);
-							return true;
-						}
-						
-					};
-				
-				}
-			});
-					
-			
-			return shop;
-		}
 		
-		private List<Monster> createMonsters() {
-			List<Monster> pouf = List.of(new Monster("Pouf", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
-					MonsterBrain.buff((m, w) -> {
-						m.effects.add(new Effects() {
-							@Override
-							public void endTurn(Monster m, World w) {
-								m.force++;
-							}
-						});
-					})
-			), List.of(
-					MonsterBrain.attack(10),
-					MonsterBrain.mental((m, w) -> {
-						w.hero.deck.add(deck.blob.carte());
-					}),
-					MonsterBrain.attack(10)
-			))));
-
-			List<Monster> bigMac = List.of(new Monster("Big", 40, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
-					MonsterBrain.buff((m, w) -> {
-						m.effects.add(new Effects() {
-							@Override
-							public void endTurn(Monster m, World w) {
-								m.armure+=2;
-							}
-						});
-					})
-			), List.of(
-					MonsterBrain.attack(10)
-			))), new Monster("Mac", 30, MonsterStrategy.simpleStrategy(List.of(
-					MonsterBrain.buff((m, w) -> w.monsters.forEach(x -> x.force++))
-			))));
-
-			List<Monster> soldatFou = List.of(new Monster("Soldat fou", 50, MonsterStrategy.simpleStrategy(List.of(
-					MonsterBrain.attack(10),
-					MonsterBrain.buff((m, w) -> {
-						m.vulnerability = 0;
-						m.force += 1;
-					}),
-					MonsterBrain.mental((m, w) -> {
-						w.hero.vulnerability += 3;
-						w.hero.faiblesse += 3;
-					})
-			))));
-
-			List<Monster> sponge = List.of(new Monster("Sponge", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
-					MonsterBrain.buff((m, w) -> {
-						m.effects.add(new Effects() {
-							@Override
-							public void endTurn(Monster m, World w) {
-								w.hero.faiblesse++;
-								m.vulnerability = 0;
-							}
-						});
-					})
-			), List.of(
-					MonsterBrain.attack(10),
-					MonsterBrain.mental((m, w) -> {
-						w.hero.deck.add(deck.blob.carte());
-					})
-			))));
-
-			List<List<Monster>> allMonsters = List.of(soldatFou, pouf, bigMac, sponge);
-
-			return allMonsters.get(random(allMonsters.size()));
-		}
-
-		private List<Monster> createEliteMonsters() {
-			IntFunction<Monster> guepeSupplier = g -> new Monster("Guepe", 10, MonsterStrategy.simpleStrategy(List.of(
-					MonsterBrain.block((m, w) -> {
-						w.monsters.forEach(x -> x.armure += 1);
-					}),
-					MonsterBrain.attack(10),
-					MonsterBrain.buff((m, w) -> {
-						w.monsters.forEach(x -> x.force += 1);
-					}),
-					MonsterBrain.attack(10)
-					)
-			, g));
-			Monster reine = new Monster("Reine", 30, MonsterStrategy.simpleStrategy(List.of(
-					MonsterBrain.block((m, w) -> {
-						m.armure += 5;
-					}),
-					MonsterBrain.attack(15),
-					MonsterBrain.buff((m, w) -> {
-						w.monsters.forEach(x -> x.force += 2);
-					}),
-					MonsterBrain.mental((m, w) -> {
-						w.monsters.add(guepeSupplier.apply(random(4)));
-					})
-			)));
-			List<Monster> guepes = List.of(reine, guepeSupplier.apply(0), guepeSupplier.apply(1), guepeSupplier.apply(2));
-			
-			List<Monster> marteau = List.of(new Monster("Sponge", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
-					MonsterBrain.buff((m, w) -> {
-						m.effects.add(new Effects() {
-							@Override
-							public void startTurn(Monster m, World w) {
-								m.faiblesse = 0;
-								m.force+=2;
-							}
-						});
-					})
-			), List.of(
-					MonsterBrain.attack(10)
-			))));
-			
-			var allMonsters = List.of(guepes, marteau);
-			return allMonsters.get(random(allMonsters.size()));
-		}
-
 		private void attackHero(int a) {
 			hero.attack(a);
 		}
@@ -711,7 +515,7 @@ public class Main {
 		}
 		
 		public void endTurn() {
-			hero.clearHand();
+			hero.clearHand(this);
 
 			for (Monster m : new ArrayList<>(monsters)) {
 				if (m.pv > 0) {
@@ -766,10 +570,10 @@ public class Main {
 
 		public void startChooseReward() {
 			state = WorldState.ChoseReward;
+
 			hero.winGold(random(25) + 25);
-
-
-			shopItems = new ArrayList<>(createReward());
+			shopItems = new ArrayList<>(position.items());
+			
 			endTurn = () -> World.this.state = WorldState.Map;
 		}
 
@@ -777,7 +581,7 @@ public class Main {
 			if (hero.energy >= carte.cost && carte.type != CarteType.UNPLAYABLE && hero.hand.remove(carte)) {
 				hero.energy -= carte.cost;
 				
-				hero.clearCard(carte);
+				hero.clearCard(carte, this);
 				
 				this.currentCard = carte;
 				this.currentPlayable = carte.action;
@@ -810,7 +614,6 @@ public class Main {
 		SOLO(WorldState.ContextSolo),
 		DECK(WorldState.ContextDeck),
 		MONSTER(WorldState.ContextMonster),
-		
 		;
 
 		private final WorldState state;
@@ -858,7 +661,12 @@ public class Main {
 			};
 		}
 
+		/**
+		 * Called when hand is dicarded
+		 * @param world
+		 */
 		default void discard(World world) {};
+		
 		/**
 		 * 
 		 * @param world
@@ -938,6 +746,18 @@ public class Main {
 		}
 	}
 	
+	
+	static class Reward {
+		int gold;
+		Supplier<List<ItemShop>> cartes;
+		
+		public Reward(int gold, Supplier<List<ItemShop>> cartes) {
+			super();
+			this.gold = gold;
+			this.cartes = cartes;
+		}
+	}
+	
 	public static interface ItemShop {
 		
 		public static ItemShop carte(int price, Carte<?> carte) {
@@ -949,7 +769,7 @@ public class Main {
 				}
 
 				@Override
-				public int price() {
+				public int price(World __) {
 					return price;
 				}
 
@@ -964,7 +784,7 @@ public class Main {
 		
 		public Playable<?> buy(World world);
 
-		public int price();
+		public int price(World world);
 		
 		public Carte<?> description();
 		
@@ -1032,7 +852,8 @@ public class Main {
 			scanner = new Scanner(System.in);
 		}
 		
-		String dpath = "m";
+		String dpath = "";
+		String mpath = "map";
 
 		public void resume(String action) {
 			System.out.println(action);
@@ -1052,7 +873,7 @@ public class Main {
 				List<Node> nexts = world.map.links.get(world.position);
 				visited.add(world.position);
 				displayMap(world.map.all, world.map.links, nexts, visited, dpath);
-				System.out.println("Map => "+dpath);
+				System.out.println("Map => "+mpath);
 				for (int i = 0; i< nexts.size(); i++) {
 					System.out.println(i+") " + nexts.get(i).title);
 				}
@@ -1070,7 +891,7 @@ public class Main {
 				System.out.println("Magasin :");
 				System.out.println(" Choose or leave:");
 				for (int j = 0; j < shopItems.size(); j++) {
-					System.out.println((j) + ") ["+ shopItems.get(j).price() +"] " + shopItems.get(j).description().name);
+					System.out.println((j) + ") ["+ shopItems.get(j).price(world) +"] " + shopItems.get(j).description().name);
 				}
 			}
 			if (world.inFight()) {
@@ -1094,7 +915,9 @@ public class Main {
 			while (choice > max) {
 				choice = scanner.nextInt();
 			}
-			dpath += choice;
+			dpath += choice + " ";
+			if (world.inMap()) {mpath += choice;}
+			
 			System.out.println(" " + dpath);
 			return choice;
 		}
@@ -1160,11 +983,13 @@ public class Main {
 		ARMURE,
 		VULNERABILITY,
 		FAIBLESSE,
+		CUSTOM,
 		;
 	}
 	
 	static class ActionEffect {
 		ActionEffectType type;
+		
 		
 	}
 	
@@ -1177,7 +1002,7 @@ public class Main {
 	
 	
 	
-	static class WorldDeck {
+	public static class WorldDeck {
 		
 		private final List<CarteDeck> deck = new ArrayList<>();
 		private final CarteDeck blob;
@@ -1269,11 +1094,175 @@ public class Main {
 	}
 	
 	
+	public static class Description {
+		String permArmure() {return "Restaure Armure +%s";}  
+		
+	}
+	
+	
+	public static class WorldEffects {
+		
+		Description descriptions;
+		
+		public WorldEffects(Description descriptions) {
+			super();
+			this.descriptions = descriptions;
+		}
+
+
+		public Effects permArmure(int value) {
+			return new Effects() {
+				@Override
+				public void endTurn(Monster m, World w) {
+					m.armure+= value;
+				}
+				
+				@Override
+				public String description() {
+					return String.format(descriptions.permArmure(), value);
+				}
+			};
+		}
+	}
+	
+	
+	public static class WorldBestiaire {
+		
+		private final WorldDeck deck;
+		
+		public WorldBestiaire(WorldDeck deck) {
+			super();
+			this.deck = deck;
+		}
+
+		public List<Monster> createMonsters() {
+			List<Monster> pouf = List.of(new Monster("Pouf", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
+					MonsterBrain.buff((m, w) -> {
+						m.effects.add(new Effects() {
+							@Override
+							public void endTurn(Monster m, World w) {
+								m.force++;
+							}
+						});
+					})
+			), List.of(
+					MonsterBrain.attack(10),
+					MonsterBrain.mental((m, w) -> {
+						w.hero.deck.add(deck.blob.carte());
+					}),
+					MonsterBrain.attack(10)
+			))));
+
+			List<Monster> bigMac = List.of(new Monster("Big", 40, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
+					MonsterBrain.buff((m, w) -> {
+						m.effects.add(new Effects() {
+							@Override
+							public void endTurn(Monster m, World w) {
+								m.armure+=2;
+							}
+							
+						});
+					})
+			), List.of(
+					MonsterBrain.attack(10)
+			))), new Monster("Mac", 30, MonsterStrategy.simpleStrategy(List.of(
+					MonsterBrain.buff((m, w) -> w.monsters.forEach(x -> x.force++))
+			))));
+
+			List<Monster> soldatFou = List.of(new Monster("Soldat fou", 50, MonsterStrategy.simpleStrategy(List.of(
+					MonsterBrain.attack(10),
+					MonsterBrain.buff((m, w) -> {
+						m.vulnerability = 0;
+						m.force += 1;
+					}),
+					MonsterBrain.mental((m, w) -> {
+						w.hero.vulnerability += 3;
+						w.hero.faiblesse += 3;
+					})
+			))));
+
+			List<Monster> sponge = List.of(new Monster("Sponge", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
+					MonsterBrain.buff((m, w) -> {
+						m.effects.add(new Effects() {
+							@Override
+							public void endTurn(Monster m, World w) {
+								w.hero.faiblesse++;
+								m.vulnerability = 0;
+							}
+						});
+					})
+			), List.of(
+					MonsterBrain.attack(10),
+					MonsterBrain.mental((m, w) -> {
+						w.hero.deck.add(deck.blob.carte());
+					})
+			))));
+
+			List<List<Monster>> allMonsters = List.of(soldatFou, pouf, bigMac, sponge);
+
+			return allMonsters.get(random(allMonsters.size()));
+		}
+
+		public List<Monster> createEliteMonsters() {
+			IntFunction<Monster> guepeSupplier = g -> new Monster("Guepe", 10, MonsterStrategy.simpleStrategy(List.of(
+					MonsterBrain.block((m, w) -> {
+						w.monsters.forEach(x -> x.armure += 1);
+					}),
+					MonsterBrain.attack(10),
+					MonsterBrain.buff((m, w) -> {
+						w.monsters.forEach(x -> x.force += 1);
+					}),
+					MonsterBrain.attack(10)
+					)
+			, g));
+			Monster reine = new Monster("Reine", 30, MonsterStrategy.simpleStrategy(List.of(
+					MonsterBrain.block((m, w) -> {
+						m.armure += 5;
+					}),
+					MonsterBrain.attack(15),
+					MonsterBrain.buff((m, w) -> {
+						w.monsters.forEach(x -> x.force += 2);
+					}),
+					MonsterBrain.mental((m, w) -> {
+						w.monsters.add(guepeSupplier.apply(random(4)));
+					})
+			)));
+			List<Monster> guepes = List.of(reine, guepeSupplier.apply(0), guepeSupplier.apply(1), guepeSupplier.apply(2));
+			
+			List<Monster> marteau = List.of(new Monster("Marteau", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
+					MonsterBrain.buff((m, w) -> {
+						m.effects.add(new Effects() {
+							@Override
+							public void startTurn(Monster m, World w) {
+								m.faiblesse = 0;
+							}
+							@Override
+							public void endTurn(Monster m, World w) {
+								m.faiblesse = 0;
+								m.force+=2;
+							}
+						});
+					})
+			), List.of(
+					MonsterBrain.attack(10)
+			))));
+			
+			var allMonsters = List.of(guepes, marteau);
+			return allMonsters.get(random(allMonsters.size()));
+		}
+	}
+	
+	
+	
+	
 	
 	public static void main(String[] args) throws IOException {
-		
-		MapWorld map = createMap();
 		WorldDeck deck = new WorldDeck();
+		WorldBestiaire bestiaire = new WorldBestiaire(deck);
+		
+		int seed= 16486744;
+		MapGenerator generator = new MapGenerator(seed, 0, deck, bestiaire);
+		MapWorld map = generator.createMap();
 		
 		Heros heros = new Heros();
 		heros.maxPv = 40;
@@ -1295,7 +1284,6 @@ public class Main {
 				int nextNode = interact.next(nexts.size()-1);
 
 				world.moveTo(nexts.get(nextNode));
-
 			}
 			else if (world.inShop()) {
 				int nextNode = interact.next(world.shopItems.size()-1);
@@ -1322,25 +1310,6 @@ public class Main {
 			}
 
 		}
-	}
-
-	private static MapWorld createMap() {
-		List<List<Node>> all = generateNodes();
-
-		Map<Node, List<Node>> links = generatePath(all);
-		differentiateNode(all, links);
-		
-		
-		Node start = new Node("Start", 0).type(NodeType.START);
-		Node end = new Node("End", 0).type(NodeType.END);
-		links.put(start, new ArrayList<>(all.get(0)));
-		links.put(all.get(all.size() - 1).get(0), List.of(end));
-		
-		MapWorld map = new MapWorld();
-		map.all = all;
-		map.links = links;
-		map.start = start;
-		return map;
 	}
 
 	private static void displayMap(List<List<Node>> all, Map<Node, List<Node>> links) {
@@ -1421,159 +1390,349 @@ public class Main {
 			throw new RuntimeException("Cannot save display", e1);
 		}
 	}
+	
+	
+	static class ElementGenerator {
+		
+		private final WorldDeck deck;
+		private final WorldBestiaire bestiaire;
+		
+		public ElementGenerator(WorldDeck deck, WorldBestiaire bestiaire) {
+			super();
+			this.deck = deck;
+			this.bestiaire = bestiaire;
+		}
 
-	private static void differentiateNode(List<List<Node>> all, Map<Node, List<Node>> links) {
-		List<Node> inside = all.stream().skip(1).flatMap(List::stream).filter(x -> x.type == NodeType.MONSTER).collect(Collectors.toList());
+		public List<ItemShop> createReward(Node n) {
+			List<Carte<?>> carteList = shuffle(deck.nextDeck());
+			List<ItemShop> shop = new ArrayList<>();
+			shop.add(leave("Aucune"));
+			
+			for (int i = 0; i < 3; i++) {
+				Carte<?> carte = carteList.get(i);
+				shop.add(ItemShop.carte(0, carte));
+			}
+			
+			return shop;
+		}
 		
-		List<Node> starting = all.get(0);
+		public List<ItemShop> createShop(Node n) {
+			List<Carte<?>> carteList = shuffle(deck.nextDeck());
+			List<ItemShop> shop = new ArrayList<>();
+			String label = "Quitter la boutique";
+			shop.add(leave(label));
+			
+			for (int i = 0; i < 6; i++) {
+				Carte<?> carte = carteList.get(i);
+				int price = (int) (carte.classe.ordinal() * 25 * (random(100) + 50) / 100.);
+				shop.add(ItemShop.carte(price, carte));
+			}
+			shop.add(new ItemShop() {
+
+				@Override
+				public int price(World world) {
+					return 25 * (world.cardsRemoved + 1);
+				}
+				
+				@Override
+				public Carte<?> description() {
+					return new Carte<Carte<?>>(-1, CarteType.POWER, 0, CarteClass.GAME, "Enlève une carte", null);
+				}
+				
+				@Override
+				public Playable<?> buy(World world) {
+					return new Playable<Carte<?>>() {
+
+						@Override
+						public ContextType type() {
+							return ContextType.DECK;
+						}
+
+						@Override
+						public boolean play(World world, Context<Carte<?>> context) {
+							Carte<?> toRemove = context.from(world);
+							world.hero.deck.remove(toRemove);
+							return true;
+						}
+						
+					};
+				}
+			});
+			
+			return shop;
+		}
+
+		public ItemShop leave(String label) {
+			return new ItemShop() {
+
+				@Override
+				public int price(World __) {
+					return 0;
+				}
+				
+				@Override
+				public Carte<?> description() {
+					return new Carte<Carte<?>>(-1, CarteType.GAME, 0, CarteClass.GAME, label, null);
+				}
+				
+				@Override
+				public Playable<?> buy(World world) {
+					return new Playable<World>() {
+
+						@Override
+						public boolean play(World world, Context<World> context) {
+							world.state = WorldState.Map;
+							return true;
+						}
+
+						@Override
+						public ContextType type() {
+							return ContextType.SOLO;
+						}};
+				
+				}
+			};
+		}
+
+		public List<Monster> createMonster(Node node) {
+			List<Monster> monsters = bestiaire.createMonsters();
+			levelUpMonsters(node, monsters);
+			return monsters;
+		}
+
+		public List<Monster> createElite(Node node) {
+			List<Monster> monsters = bestiaire.createEliteMonsters();
+			levelUpMonsters(node, monsters);
+			return monsters;
+		}
 		
-		boolean allPathHasShop = false;
-		while (!allPathHasShop) {
-			inside.get(random(inside.size())).type = NodeType.SHOP;
-			allPathHasShop = true;
-			for (Node startingNode : starting) {
-				boolean pathHasShop = false;
-				boolean pathHas2Shop = false;
-				Set<Node> current = new HashSet<>(Collections.singleton(startingNode));
-				while (!current.isEmpty()) {
-					Set<Node> next = new HashSet<>();
-					for (Node n : current) {
-						List<Node> linked = links.getOrDefault(n, Collections.emptyList());
-						next.addAll(linked);
+		private void levelUpMonsters(Node node, List<Monster> monsters) {
+			for (Monster m : monsters) {
+				m.originPv(m.originPv * (node.level + 1) + node.h);
+			}
+		}
+	}
+	
+	
+	static class MapGenerator {
+		private final Random randomMap;
+		private final ElementGenerator elements;
+		private final int level;
+		
+		public MapGenerator(int seed, int level, WorldDeck deck, WorldBestiaire bestiaire) {
+			this.level = level;
+			this.randomMap = new Random(seed);
+			this.elements = new ElementGenerator(deck, bestiaire);
+		}
+		
+		int randomMap(int n) {
+			return randomMap.nextInt(n);
+		}
+		
+		public MapWorld createMap() {
+			List<List<Node>> all = generateNodes();
+
+			Map<Node, List<Node>> links = generatePath(all);
+			differentiateNode(all, links);
+			animateNode(all);
+			
+			Node start = new Node("Start", level, 0).type(NodeType.START);
+			Node end = new Node("End", level, 0).type(NodeType.END);
+			links.put(start, new ArrayList<>(all.get(0)));
+			links.put(all.get(all.size() - 1).get(0), List.of(end));
+			
+			MapWorld map = new MapWorld();
+			map.all = all;
+			map.links = links;
+			map.start = start;
+			return map;
+		}
+
+		private void animateNode(List<List<Node>> all) {
+			all.stream().flatMap(List::stream)
+				.forEach(n -> {
+					if (n.type == NodeType.MONSTER) {
+						List<Monster> monsters = elements.createMonster(n);
+						n.setMonsters(() -> monsters);
+						List<ItemShop> items = elements.createReward(n);
+						int gold = random(25 * (level + 1) + n.h) + 25;
+						Reward reward = new Reward(gold, () -> items);
+						n.setReward(reward);
 					}
-					current = next;
-					for (Node n : current) {
-						if (n.type == NodeType.SHOP) {
-							if (pathHasShop ) {
-								pathHas2Shop = true;
+					else if (n.type == NodeType.ELITE) {
+						List<Monster> monsters = elements.createElite(n);
+						n.setMonsters(() -> monsters);
+						List<ItemShop> items = elements.createReward(n);
+						int gold = 2 * (random(25 * (level + 1) + n.h) + 25);
+						Reward reward = new Reward(gold, () -> items);
+						n.setReward(reward);
+					}
+					else if (n.type == NodeType.SHOP) {
+						List<Monster> monsters = elements.createElite(n);
+						n.setMonsters(() -> monsters);
+						List<ItemShop> items = elements.createShop(n);
+						n.setReward(new Reward(0, () -> items));
+					}
+					else {
+						n.setMonsters(() -> Collections.emptyList());
+						n.setReward(new Reward(0, () -> Collections.emptyList()));
+					}
+					
+				});
+		}
+
+		private void differentiateNode(List<List<Node>> all, Map<Node, List<Node>> links) {
+			List<Node> inside = all.stream().skip(1).flatMap(List::stream).filter(x -> x.type == NodeType.MONSTER).collect(Collectors.toList());
+
+			List<Node> starting = all.get(0);
+
+			boolean allPathHasShop = false;
+			while (!allPathHasShop) {
+				inside.get(randomMap(inside.size())).type = NodeType.SHOP;
+				allPathHasShop = true;
+				for (Node startingNode : starting) {
+					boolean pathHasShop = false;
+					boolean pathHas2Shop = false;
+					Set<Node> current = new HashSet<>(Collections.singleton(startingNode));
+					while (!current.isEmpty()) {
+						Set<Node> next = new HashSet<>();
+						for (Node n : current) {
+							List<Node> linked = links.getOrDefault(n, Collections.emptyList());
+							next.addAll(linked);
+						}
+						current = next;
+						for (Node n : current) {
+							if (n.type == NodeType.SHOP) {
+								if (pathHasShop ) {
+									pathHas2Shop = true;
+								}
+								pathHasShop = true;
 							}
-							pathHasShop = true;
+						}
+					}
+
+					if (!pathHas2Shop) {
+						allPathHasShop = false;
+					}
+				}
+			}
+
+			for (int i = 0; i < 5; i++) {
+
+				Node n = inside.get(randomMap(inside.size()));
+				while (n.type != NodeType.MONSTER) {
+					n = inside.get(randomMap(inside.size()));
+				}
+				n.type = NodeType.ELITE;
+			}
+
+			for (int i = 0; i < 4; i++) {
+
+				Node n = inside.get(randomMap(inside.size()));
+				while (n.type != NodeType.MONSTER) {
+					n = inside.get(randomMap(inside.size()));
+				}
+				n.type = NodeType.REPOS;
+			}
+			for (int i = 0; i < 8; i++) {
+
+				Node n = inside.get(randomMap(inside.size()));
+				while (n.type != NodeType.MONSTER) {
+					n = inside.get(randomMap(inside.size()));
+				}
+				n.type = NodeType.ENIGME;
+			}
+			all.get(all.size()-2).forEach(x -> x.type = NodeType.REPOS);
+		}
+
+		private  List<List<Node>> generateNodes() {
+			List<List<Node>> all = new ArrayList<>();
+			int steps = 12;
+			all.add(List.of(new Node("A", level, 0), new Node("B", level, 1), new Node("C", level, 2)));
+			int n = 0;
+			for (int i = 0; i < steps; i++) {
+				int nbNode = randomMap(4) + 2;
+				List<Node> nodes = new ArrayList<>();
+				for (int j = 0; j < nbNode; j++) {
+					nodes.add(new Node((++n)+"", level, j));
+				}
+				all.add(nodes);
+			}
+			all.add(List.of(new Node("D", level, 0), new Node("E", level, 1), new Node("F", level, 2)));
+			Node finalBoss = new Node("X", level, 0);
+			finalBoss.type = NodeType.ELITE;
+			all.add(List.of(finalBoss));
+			all.get(steps / 2).forEach(x -> x.type = NodeType.COFFRE);
+			return all;
+		}
+
+		private  Map<Node, List<Node>> generatePath(List<List<Node>> all) {
+			Map<Node, Set<Node>> links = new HashMap<>();
+			Set<Node> allNode = all.stream().flatMap(List::stream).collect(Collectors.toSet());
+			while (!allNode.isEmpty()) {
+				int fromLayer = randomMap(all.size()-1);
+				int from = randomMap(all.get(fromLayer).size());
+				int to = randomMap(all.get(fromLayer + 1).size());
+
+				Node nodeFrom = all.get(fromLayer).get(from);
+				Node nodeTo = all.get(fromLayer + 1).get(to);
+
+				if (!allNode.contains(nodeFrom) && !allNode.contains(nodeTo)) {
+					continue;
+				}
+
+				if (!allNode.contains(nodeFrom) || !allNode.contains(nodeTo)) {
+					if (randomMap(100) > 5)
+						continue;
+				}
+
+				double r_min = (from - 1.) / all.get(fromLayer).size();
+				double r_max = (from + 1.) / all.get(fromLayer).size();
+
+				double x_min = ((double) to - 1.) / all.get(fromLayer + 1).size();
+				double x_max = ((double) to + 1.) / all.get(fromLayer + 1).size();
+
+				boolean possible = (x_min >= r_min && x_min <= r_max) || (x_max >= r_min && x_max <= r_max) || (randomMap(100) >90);
+				for (int j = 0; j < from; j++) {
+					Set<Node> p = links.getOrDefault(all.get(fromLayer).get(j), Collections.emptySet());
+					for (Node n : p) {
+						if (n.h > to) {
+							possible = false;
 						}
 					}
 				}
 
-				if (!pathHas2Shop) {
-					allPathHasShop = false;
+				for (int j = from + 1; j < all.get(fromLayer).size(); j++) {
+					Set<Node> p = links.getOrDefault(all.get(fromLayer).get(j), Collections.emptySet());
+					for (Node n : p) {
+						if (n.h < to) {
+							possible = false;
+						}
+					}
 				}
-			}
-		}
-		
-		for (int i = 0; i < 5; i++) {
-			
-			Node n = inside.get(random(inside.size()));
-			while (n.type != NodeType.MONSTER) {
-				n = inside.get(random(inside.size()));
-			}
-			n.type = NodeType.ELITE;
-		}
-		
-		for (int i = 0; i < 4; i++) {
-			
-			Node n = inside.get(random(inside.size()));
-			while (n.type != NodeType.MONSTER) {
-				n = inside.get(random(inside.size()));
-			}
-			n.type = NodeType.REPOS;
-		}
-		for (int i = 0; i < 8; i++) {
-			
-			Node n = inside.get(random(inside.size()));
-			while (n.type != NodeType.MONSTER) {
-				n = inside.get(random(inside.size()));
-			}
-			n.type = NodeType.ENIGME;
-		}
-		all.get(all.size()-2).forEach(x -> x.type = NodeType.REPOS);
-	}
 
-	private static List<List<Node>> generateNodes() {
-		List<List<Node>> all = new ArrayList<>();
-		int steps = 12;
-		all.add(List.of(new Node("A", 0), new Node("B", 1), new Node("C", 2)));
-		int n = 0;
-		for (int i = 0; i < steps; i++) {
-			int nbNode = random(4) + 2;
-			List<Node> nodes = new ArrayList<>();
-			for (int j = 0; j < nbNode; j++) {
-				nodes.add(new Node((++n)+"", j));
-			}
-			all.add(nodes);
-		}
-		all.add(List.of(new Node("D", 0), new Node("E", 1), new Node("F", 2)));
-		Node finalBoss = new Node("X", 0);
-		finalBoss.type = NodeType.ELITE;
-		all.add(List.of(finalBoss));
-		all.get(steps / 2).forEach(x -> x.type = NodeType.COFFRE);
-		return all;
-	}
+				if (possible) {
+					links.computeIfAbsent(nodeFrom, __ -> new HashSet<>()).add(nodeTo);
+				}
 
-	private static Map<Node, List<Node>> generatePath(List<List<Node>> all) {
-		Map<Node, Set<Node>> links = new HashMap<>();
-		Set<Node> allNode = all.stream().flatMap(List::stream).collect(Collectors.toSet());
-		while (!allNode.isEmpty()) {
-			int fromLayer = random(all.size()-1);
-			int from = random(all.get(fromLayer).size());
-			int to = random(all.get(fromLayer + 1).size());
-			
-			Node nodeFrom = all.get(fromLayer).get(from);
-			Node nodeTo = all.get(fromLayer + 1).get(to);
-			
-			if (!allNode.contains(nodeFrom) && !allNode.contains(nodeTo)) {
-				continue;
-			}
-			
-			if (!allNode.contains(nodeFrom) || !allNode.contains(nodeTo)) {
-				if (random(100) > 5)
-					continue;
-			}
-			
-			double r_min = (from - 1.) / all.get(fromLayer).size();
-			double r_max = (from + 1.) / all.get(fromLayer).size();
-			
-			double x_min = ((double) to - 1.) / all.get(fromLayer + 1).size();
-			double x_max = ((double) to + 1.) / all.get(fromLayer + 1).size();
-			
-			
-			boolean possible = (x_min >= r_min && x_min <= r_max) || (x_max >= r_min && x_max <= r_max) || (random(100) >90);
-			//boolean possible = true; //x >= r_min && x <= r_max;
-			for (int j = 0; j < from; j++) {
-				Set<Node> p = links.getOrDefault(all.get(fromLayer).get(j), Collections.emptySet());
-				for (Node n : p) {
-					if (n.h > to) {
-						possible = false;
+				for (Node node : new HashSet<>(allNode)) {
+					if (links.values().stream().flatMap(Set::stream).anyMatch(n -> n == node) 
+							|| node.title.equals("A")|| node.title.equals("B")|| node.title.equals("C")) {
+						if (links.containsKey(node) || node.title.equals("X")) {
+							allNode.remove(node);
+						}
 					}
 				}
 			}
-			
-			for (int j = from + 1; j < all.get(fromLayer).size(); j++) {
-				Set<Node> p = links.getOrDefault(all.get(fromLayer).get(j), Collections.emptySet());
-				for (Node n : p) {
-					if (n.h < to) {
-						possible = false;
-					}
-				}
+			Map<Node, List<Node>> res = new HashMap<>();
+			for (Entry<Node, Set<Node>> e : links.entrySet()) {
+				ArrayList<Node> nodes = new ArrayList<>(e.getValue());
+				Collections.sort(nodes, Comparator.comparing(x -> x.h));
+				res.put(e.getKey(), nodes);
 			}
-			
-			if (possible) {
-				links.computeIfAbsent(nodeFrom, __ -> new HashSet<>()).add(nodeTo);
-			}
-			
-			for (Node node : new HashSet<>(allNode)) {
-				if (links.values().stream().flatMap(Set::stream).anyMatch(n -> n == node) 
-						|| node.title.equals("A")|| node.title.equals("B")|| node.title.equals("C")) {
-					if (links.containsKey(node) || node.title.equals("X")) {
-						allNode.remove(node);
-					}
-				}
-			}
+			return res;
 		}
-		Map<Node, List<Node>> res = new HashMap<>();
-		for (Entry<Node, Set<Node>> e : links.entrySet()) {
-			ArrayList<Node> nodes = new ArrayList<>(e.getValue());
-			Collections.sort(nodes, Comparator.comparing(x -> x.h));
-			res.put(e.getKey(), nodes);
-		}
-		return res;
+
 	}
 	
 }
