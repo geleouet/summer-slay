@@ -102,10 +102,19 @@ public class Main {
 	}
 	
 	public static interface MonsterStrategy {
+
+		public void prepareTurn(World world, Monster monster);
+
+		public void endTurn(World world, Monster monster);
+
 		public MonsterBrain get(World world, Monster monster);
 		
 		public static MonsterStrategy simpleStrategy(List<MonsterBrain> brains) {
 			return simpleStrategy(brains, 0);
+		}
+
+		public static MonsterStrategy simpleStrategy(List<MonsterBrain> brains, int start) {
+			return andThenSimpleStrategy(Collections.emptyList(), brains, start);
 		}
 
 		public static MonsterStrategy prepareAndThensimpleStrategy(List<MonsterBrain> brainsPrepare, List<MonsterBrain> brains) {
@@ -119,35 +128,26 @@ public class Main {
 				boolean inPrepare=true;
 
 				@Override
-				public MonsterBrain get(World world, Monster monster) {
+				public void prepareTurn(World world, Monster monster) {
 					if (state == brainsPrepare.size() && inPrepare) {
 						inPrepare = false;
 						state = start;
 					}
-					if (inPrepare) {
-						MonsterBrain monsterBrain = brainsPrepare.get(state);
-						state ++;
-						return monsterBrain;
-					}
-
-					MonsterBrain monsterBrain = brains.get(state);
-					state = (state + 1) % brains.size();
-					return monsterBrain;
+					state = (state) % brains.size();
 				}
-			};
-		}public static MonsterStrategy simpleStrategy(List<MonsterBrain> brains, int start) {
-			return  new MonsterStrategy() {
 
-				int state = start;
+				@Override
+				public void endTurn(World world, Monster monster) {
+					state ++;
+				}
 
 				@Override
 				public MonsterBrain get(World world, Monster monster) {
-					MonsterBrain monsterBrain = brains.get(state);
-					state = (state + 1) % brains.size();
-					return monsterBrain;
+					return inPrepare ? brainsPrepare.get(state) : brains.get(state);
 				}
 			};
 		}
+
 	}
 	
 	enum MonsterAttackType {
@@ -202,6 +202,10 @@ public class Main {
 		}
 	}
 
+	interface HiddenEffects extends Effects {
+		default boolean display() {return false;};
+	}
+
 	interface Effects {
 		default void onDeath(Monster m, World w) {}
 
@@ -210,6 +214,8 @@ public class Main {
 		default void startTurn(Monster m, World w) {};
 		
 		default String description() {return "";};
+
+		default boolean display() {return true;};
 	}
 
 	public static class Monster extends Personnage {
@@ -226,11 +232,7 @@ public class Main {
 		}
 
 		public void attackHero(World world, int a) {
-			world.attackHero((int) ((a + force) * (faiblesse > 0 ? 0.75 : 1.)));
-		}
-
-		public void attack(int degat) {
-			this.pv = (int) Math.max(0, this.pv - Math.max(0, degat - armure) * (vulnerability > 0 ? 1.5: 1.));
+			world.attackHero(this, (int) ((a + force) * (faiblesse > 0 ? 0.75 : 1.)));
 		}
 
 		public String name() {
@@ -257,9 +259,10 @@ public class Main {
 		}
 		return liste;
 	}
-	
 
-	public static class Personnage {
+
+
+	public abstract static class Personnage {
 
 		int pv;
 		int force;
@@ -269,17 +272,43 @@ public class Main {
 
 		List<Effects> effects = new ArrayList<>();
 
-		
-		public void addDefense(int d) {
-			armure += d;
+		public <T extends Personnage> T effect(Effects e) {
+			effects.add(e);
+			return (T) this;
 		}
 
-		public void addForce(int f) {
+		public AttackResult attack(int a) {
+			int amount = (int) (Math.max(0, a - armure) * (vulnerability > 0 ? 1.5 : 1.));
+			int b = armure - Math.max(0, armure - a);
+			this.armure -= b;
+			this.pv -= amount;
+			return new AttackResult(a, amount, b);
+		}
+
+		public abstract String name();
+
+		public void armure(int amount, Personnage from, World w) {
+			armure += amount;
+			w.describe(new ActionBuff(from, this, List.of(new ActionEffect(ActionEffectType.ARMURE, amount))));
+		}
+
+		public void force(int f, World w) {
+			force(f, this, w);
+		}
+
+		public void force(int f, Personnage from, World w) {
 			force += f;
+			w.describe(new ActionBuff(from, this, List.of(new ActionEffect(ActionEffectType.FORCE, f))));
 		}
 
-		public void attack(int a) {
-			pv -= Math.max(0, a - armure) * (vulnerability > 0 ? 1.5 : 1.);
+		public void faiblesse(int f, Personnage from, World w) {
+			faiblesse += f;
+			w.describe(new ActionBuff(from, this, List.of(new ActionEffect(ActionEffectType.FAIBLESSE, f))));
+		}
+
+		public void vulnerability(int f, Personnage from, World w) {
+			vulnerability += f;
+			w.describe(new ActionBuff(from, this, List.of(new ActionEffect(ActionEffectType.VULNERABILITY, f))));
 		}
 	}
 	
@@ -330,7 +359,7 @@ public class Main {
 			retired.clear();
 			List<Carte<?>> tmp = new ArrayList<>(deck);
 			deck.clear();
-			tmp.forEach(c -> {if (!c.ephemere) deck.add(c);});
+			tmp.forEach(c -> {if (!c.ephemere && !c.ethereal) deck.add(c);});
 		}
 
 		public void clearHand(World world) {
@@ -351,6 +380,11 @@ public class Main {
 			else {
 				retired.add(carte);
 			}
+		}
+
+		@Override
+		public String name() {
+			return "Hero";
 		}
 	}
 	
@@ -379,7 +413,7 @@ public class Main {
 		
 		private WorldState state;
 		private WorldState contextState;
-		private Runnable endTurn = () -> {};
+		private Runnable endPlayable = () -> {};
 
 		private Carte<?> currentCard;
 		private Playable<?> currentPlayable;
@@ -391,7 +425,8 @@ public class Main {
 		List<BiConsumer<Carte<?>, World>> afterPlay = new ArrayList<>();
 		List<IntUnaryOperator> attackStack = new ArrayList<>();
 		List<ItemShop> shopItems = new ArrayList<>();
-		
+
+		List<Action> describe = new ArrayList<>();
 		
 		public World(MapWorld map, Heros heros, WorldDeck deck) {
 			this.map = map;
@@ -444,42 +479,68 @@ public class Main {
 
 		public void startShop() {
 			state = WorldState.Shop;
-			endTurn = () -> {};
+			endPlayable = () -> {};
 		}
 		
 		public void playChooseItem(ItemShop item) {
 			if (item.price(this) <= hero.gold) {
 				hero.gold -= item.price(this);
 				Playable<?> bought = item.buy(this);
+				shopItems.remove(item);
 				currentPlayable = bought;
 				currentPlayable.type().handle(this);
-				endTurn.run();
+				endPlayable.run();
 			}
 		}
 
 		public <T> void play(Context<T> context) {
+			describe.clear();
 			state.next(this);
 			@SuppressWarnings("unchecked")
 			Playable<T> playable = (Playable<T>) currentPlayable;
 			boolean play = playable.play(this, context);
 			if (play) {
 				currentPlayable = null;
-				endTurn.run();
+				endPlayable.run();
 			}
 		}
 		
-		
-		
-		private void attackHero(int a) {
-			hero.attack(a);
+		private void attackHero(Personnage monster, int a) {
+			AttackResult x = hero.attack(a);
+			if (x.brokenArmure != 0) {
+				describe(new ActionFight(monster, hero, List.of(
+						new ActionEffect(ActionEffectType.ATTACK, a),
+						new ActionEffect(ActionEffectType.ARMURE, -x.brokenArmure),
+						new ActionEffect(ActionEffectType.INJURY, x.injury))
+				));
+			}
+			else {
+				describe(new ActionFight(monster, hero, List.of(
+						new ActionEffect(ActionEffectType.ATTACK, a),
+						new ActionEffect(ActionEffectType.INJURY, x.injury))
+				));
+			}
 		}
 
-		public void attack(Monster m, int f) {
-			int attack = hero.attack(m, f);
+		public void attackMonster(Monster m, int a) {
+			int attack = hero.attack(m, a);
 			for (IntUnaryOperator i : attackStack) {
 				attack = i.applyAsInt(attack);
 			}
-			m.attack(attack);
+			AttackResult x = m.attack(attack);
+			if (x.brokenArmure != 0) {
+				describe(new ActionFight(hero, m, List.of(
+						new ActionEffect(ActionEffectType.ATTACK, a),
+						new ActionEffect(ActionEffectType.ARMURE, -x.brokenArmure),
+						new ActionEffect(ActionEffectType.INJURY, x.injury))
+				));
+			}
+			else {
+				describe(new ActionFight(hero, m, List.of(
+						new ActionEffect(ActionEffectType.ATTACK, a),
+						new ActionEffect(ActionEffectType.INJURY, x.injury))
+				));
+			}
 		}
 
 		public void startFight() {
@@ -491,7 +552,7 @@ public class Main {
 			hero.faiblesse = 0;
 			hero.armure = 0;
 			hero.force = 0;
-			endTurn = this::afterPlay;
+			endPlayable = this::afterPlay;
 			beforePlay.clear();
 			afterPlay.clear();
 		}
@@ -509,12 +570,23 @@ public class Main {
 			}
 			for (Monster m : monsters) {
 				if (m.pv > 0) {
+					m.brain.prepareTurn(this, m);
+				}
+			}
+			monstersIntentions();
+		}
+
+		private void monstersIntentions() {
+			intentions.clear();
+			for (Monster m : monsters) {
+				if (m.pv > 0) {
 					intentions.put(m, m.brain.get(this, m));
 				}
 			}
 		}
-		
+
 		public void endTurn() {
+			describe.clear();
 			hero.clearHand(this);
 
 			for (Monster m : new ArrayList<>(monsters)) {
@@ -537,6 +609,11 @@ public class Main {
 					for (Effects e : new ArrayList<>(m.effects)) {
 						e.endTurn(m, this);
 					}
+				}
+			}
+			for (Monster m : monsters) {
+				if (m.pv > 0) {
+					m.brain.endTurn(this, m);
 				}
 			}
 			checkEndFight();
@@ -574,7 +651,7 @@ public class Main {
 			hero.winGold(random(25) + 25);
 			shopItems = new ArrayList<>(position.items());
 			
-			endTurn = () -> World.this.state = WorldState.Map;
+			endPlayable = () -> World.this.state = WorldState.Map;
 		}
 
 		public void playCard(Carte<?> carte) {
@@ -588,6 +665,8 @@ public class Main {
 
 				beforePlay(carte);
 				currentPlayable.type().handle(this);
+
+				monstersIntentions();
 			}
 		}
 
@@ -603,6 +682,19 @@ public class Main {
 			}
 			this.currentCard = null;
 			checkEndFight();
+		}
+
+		public void describe(Action action) {
+			describe.add(action);
+		}
+
+		public void deck(Carte<?> carte, Personnage from) {
+			hero.deck.add(carte);
+			describe(new ActionBuff(from, hero, List.of(new CarteActionEffect(carte))));
+		}
+
+		public void monsters(Monster add, Personnage from) {
+			describe(new ActionBuff(from, hero, List.of(new SpawnMonsterActionEffect(add))));
 		}
 	}
 	
@@ -861,11 +953,30 @@ public class Main {
 
 		public int next(int max) {
 			{
+				world.describe.forEach(a -> {
+					if (a instanceof ActionFight) {
+						ActionFight actionFight = (ActionFight) a;
+						System.out.println(actionFight.origin.name() + " / " + actionFight.cible.name() + " => " +
+								actionFight.effects.stream().map(e -> describe(e))
+										.collect(Collectors.joining(", ","{", "}")));
+					}
+					else if (a instanceof ActionBuff) {
+						ActionBuff actionBuff = (ActionBuff) a;
+						System.out.println(actionBuff.origin.name() + " / " + actionBuff.cible.name() + " => " +
+								actionBuff.effects.stream().map(e -> describe(e))
+										.collect(Collectors.joining(", ","{", "}")));
+					}
+				});
+			}
+
+			{
 				System.out.println(world.hero.pv + "/" + world.hero.maxPv + " Gold:" + world.hero.gold +  " armure:" + world.hero.armure + " force:" + world.hero.force + " faiblesse:" + world.hero.faiblesse + " vulnerabilité:" + world.hero.vulnerability);
 
 				List<Monster> monstre = world.monsters;
 				for (int j = 0; j < monstre.size(); j++) {
 					System.out.println(monstre.get(j).name() + " / " + monstre.get(j).pv +"pv / "+ " force:" + monstre.get(j).force+ " armure:" + monstre.get(j).armure + " vulnerabilité:" + monstre.get(j).vulnerability + " faiblesse:" + monstre.get(j).faiblesse + " => " + world.intentions.get(monstre.get(j)).display());
+
+					monstre.get(j).effects.stream().filter(e -> e.display()).forEach(e -> System.out.println("   " + e.description()));
 				}
 			}
 			
@@ -920,6 +1031,22 @@ public class Main {
 			
 			System.out.println(" " + dpath);
 			return choice;
+		}
+
+		private String describe(ActionEffect e) {
+			if (e instanceof CustomActionEffect) {
+				CustomActionEffect customActionEffect = (CustomActionEffect) e;
+				return ((CustomActionEffect) e).desc + " " + e.amount;
+			}
+			else if (e instanceof CarteActionEffect) {
+				CarteActionEffect customActionEffect = (CarteActionEffect) e;
+				return ((CarteActionEffect) e).desc.name;
+			}
+			else if (e instanceof SpawnMonsterActionEffect) {
+				SpawnMonsterActionEffect customActionEffect = (SpawnMonsterActionEffect) e;
+				return ((SpawnMonsterActionEffect) e).desc.name();
+			}
+			return e.type + " " + e.amount;
 		}
 
 		public void start() {
@@ -979,6 +1106,8 @@ public class Main {
 	
 	
 	enum ActionEffectType {
+		ATTACK,
+		INJURY,
 		FORCE,
 		ARMURE,
 		VULNERABILITY,
@@ -986,18 +1115,84 @@ public class Main {
 		CUSTOM,
 		;
 	}
-	
+
+	public static class AttackResult {
+		int amount;
+		int injury;
+		int brokenArmure;
+
+		public AttackResult(int amount, int injury, int brokenArmure) {
+			this.amount = amount;
+			this.injury = injury;
+			this.brokenArmure = brokenArmure;
+		}
+	}
+
+	static class CustomActionEffect extends  ActionEffect {
+		private final String desc;
+
+		public CustomActionEffect(ActionEffectType type, int amount, String desc) {
+			super(type, amount);
+			this.desc = desc;
+		}
+	}
+
+	static class CarteActionEffect extends  ActionEffect {
+		private final Carte desc;
+
+		public CarteActionEffect(Carte desc) {
+			super(ActionEffectType.CUSTOM, 1);
+			this.desc = desc;
+		}
+	}
+
+	static class SpawnMonsterActionEffect extends  ActionEffect {
+		private final Personnage desc;
+
+		public SpawnMonsterActionEffect(Personnage desc) {
+			super(ActionEffectType.CUSTOM, 1);
+			this.desc = desc;
+		}
+	}
+
 	static class ActionEffect {
 		ActionEffectType type;
-		
-		
+		int amount;
+
+		public ActionEffect(ActionEffectType type, int amount) {
+			this.type = type;
+			this.amount = amount;
+		}
 	}
-	
+
 	static class Action {
+
+	}
+
+	static class ActionFight extends Action {
 		Personnage origin;
 		Personnage cible;
-		
+
 		List<ActionEffect> effects;
+
+		public ActionFight(Personnage origin, Personnage cible, List<ActionEffect> effects) {
+			this.origin = origin;
+			this.cible = cible;
+			this.effects = effects;
+		}
+	}
+
+	static class ActionBuff extends Action {
+		Personnage origin;
+		Personnage cible;
+
+		List<ActionEffect> effects;
+
+		public ActionBuff(Personnage origin, Personnage cible, List<ActionEffect> effects) {
+			this.origin = origin;
+			this.cible = cible;
+			this.effects = effects;
+		}
 	}
 	
 	
@@ -1020,27 +1215,29 @@ public class Main {
 			
 			this.endTurn = ethereal(4, CarteType.GAME,0, CarteClass.GAME, "Fin de tour", Playable.solo(World::endTurn));
 			
-			this.startAttack = carte(1, CarteType.ATTACK,1, CarteClass.START, "Basic Attack (6)", Playable.monster((w,m) -> w.attack(m, 6)));
-			this.startDefense = carte(1, CarteType.ARMURE,1, CarteClass.START, "Basic Defense (5)", Playable.solo((w) -> w.hero.addDefense(5)));
-			this.startForce = carte(2, CarteType.POWER,1, CarteClass.START, "Renforcement (+2 Force)", Playable.solo((w) -> w.hero.addForce(2)));
-			this.startVuln = carte(2, CarteType.POWER,1, CarteClass.START, "Attaque Vicieuse (4, +2 Vulnerabilité)", Playable.monster((w,m) -> {w.attack(m, 4); m.vulnerability+=2;}));
+			this.startAttack = carte(1, CarteType.ATTACK,1, CarteClass.START, "Basic Attack (6)", Playable.monster((w,m) -> w.attackMonster(m, 6)));
+			this.startDefense = carte(1, CarteType.ARMURE,1, CarteClass.START, "Basic Defense (5)", Playable.solo((w) -> w.hero.armure(5, w.hero, w)));
+			this.startForce = carte(2, CarteType.POWER,1, CarteClass.START, "Renforcement (+2 Force)", Playable.solo((w) -> w.hero.force(2, w)));
+			this.startVuln = carte(2, CarteType.POWER,1, CarteClass.START, "Attaque Vicieuse (4, +2 Vulnerabilité)", Playable.monster((w,m) -> {w.attackMonster(m, 4); m.vulnerability(2, w.hero, w);}));
 			
 			this.blob = ephemere(17, CarteType.UNPLAYABLE,0, CarteClass.MALEDICTION, "Blob", Playable.notPlayable(__ -> {}));
-			this.blessure = ephemere(11, CarteType.UNPLAYABLE,0, CarteClass.MALEDICTION, "Blessure (1 PV)", Playable.notPlayable(w -> w.hero.pv -= 1));
+			this.blessure = ephemere(11, CarteType.UNPLAYABLE,0, CarteClass.MALEDICTION, "Blessure (1 PV)", Playable.notPlayable(w -> w.attackHero(w.hero, 1)));
 			
 			carte(3, CarteType.POWER,0, CarteClass.COMMON, "Double Attack (Next attack x2)", Playable.attackStack(CarteType.ATTACK.is(), i -> i*2));
 			carte(4, CarteType.POWER,0, CarteClass.COMMON, "Furie (+2 Energy, -6PV)", Playable.solo(w -> {w.hero.pv -= 6; w.hero.energy += 3;}));
 			carte(5, CarteType.POWER,1, CarteClass.COMMON, "Draw (draw two cards)", Playable.solo(w -> {w.hero.drawCard();w.hero.drawCard();}));
-			carte(6, CarteType.ATTACK,2, CarteClass.COMMON, "Medium Attack (15)", Playable.monster((w,m) -> w.attack(m, 15)));
-			carte(7, CarteType.POWER,2, CarteClass.COMMON, "Faiblesse (faiblesse +3) ", Playable.monster((w,m) -> m.faiblesse +=3));
-			carte(8, CarteType.ATTACK,3, CarteClass.LEGEND, "Big Attack (25)", Playable.monster((w,m) -> w.attack(m, 25)));
-			carte(9, CarteType.ARMURE,1, CarteClass.RARE, "Defense (7 + draw one card)", Playable.solo((w) -> {w.hero.addDefense(5); w.hero.drawCard();}));
+			carte(6, CarteType.ATTACK,2, CarteClass.COMMON, "Medium Attack (15)", Playable.monster((w,m) -> w.attackMonster(m, 15)));
+			carte(7, CarteType.POWER,2, CarteClass.COMMON, "Faiblesse (faiblesse +3) ", Playable.monster((w,m) -> m.faiblesse(3, w.hero, w)));
+			carte(8, CarteType.ATTACK,3, CarteClass.LEGEND, "Big Attack (25)", Playable.monster((w,m) -> w.attackMonster(m, 25)));
+			carte(9, CarteType.ARMURE,1, CarteClass.RARE, "Defense (7 + draw one card)", Playable.solo((w) -> {
+				w.hero.armure(7, w.hero, w);
+				w.hero.drawCard();}));
 			carte(10, CarteType.ARMURE,1, CarteClass.RARE, "Ninja (+5 armure par attaque)", Playable.solo(w -> {w.afterPlay.add((c,z)->{if (c.type == CarteType.ATTACK) {w.hero.armure+=5;};});}));
-			carte(10, CarteType.ARMURE,1, CarteClass.RARE, "BlockAttack (attaque de l'armure)", Playable.monster((w, m) -> {w.attack(m, w.hero.armure);}));
-			carte(12, CarteType.ATTACK,1, CarteClass.COMMON, "Sacrifice (Attack (10) + une blessure)", Playable.monster((w, m) -> {w.attack(m, 10); w.hero.deck.add(blessure.carte());}));
+			carte(10, CarteType.ARMURE,1, CarteClass.RARE, "BlockAttack (attaque de l'armure)", Playable.monster((w, m) -> {w.attackMonster(m, w.hero.armure);}));
+			carte(12, CarteType.ATTACK,1, CarteClass.COMMON, "Sacrifice (Attack (10) + une blessure)", Playable.monster((w, m) -> {w.attackMonster(m, 10); w.hero.deck.add(blessure.carte());}));
 			carte(13, CarteType.POWER,1, CarteClass.COMMON, "Marques (+5 marques à tous)", Playable.solo((w) -> {w.monsters.forEach(m -> IntStream.range(0, 5).forEach(__ -> m.effects.add(marque)));}));
 			carte(14, CarteType.POWER,1, CarteClass.COMMON, "Marques (x2)", Playable.monster((w, m) -> {IntStream.range(0, (int) m.effects.stream().filter(e -> e == marque).count()).forEach(__ -> m.effects.add(marque));}));
-			carte(15, CarteType.POWER,2, CarteClass.COMMON, "x5 Attaques / Marque", Playable.monster((w, m) -> {w.attack(m, (int) m.effects.stream().filter(e -> e == marque).count());}));
+			carte(15, CarteType.POWER,2, CarteClass.COMMON, "x5 Attaques / Marque", Playable.monster((w, m) -> {w.attackMonster(m, (int) m.effects.stream().filter(e -> e == marque).count());}));
 
 
 		}
@@ -1080,11 +1277,20 @@ public class Main {
 			deck.add(cd);
 			return cd;
 		}
+
+		/**
+		 *
+		 * Disparait a la fin du fight
+		 */
 		private CarteDeck ephemere(int __, CarteType type, int originCost, CarteClass classe, String description, Playable<?> action) {
 			CarteDeck cd = new CarteDeck(deck.size(), originCost, type, classe, description, action, true, false);
 			deck.add(cd);
 			return cd;
 		}
+
+		/**
+		 * disparait a la fin du tour
+		 */
 		private CarteDeck ethereal(int __, CarteType type, int originCost, CarteClass classe, String description, Playable<?> action) {
 			CarteDeck cd = new CarteDeck(deck.size(), originCost, type, classe, description, action, false, true);
 			deck.add(cd);
@@ -1095,7 +1301,8 @@ public class Main {
 	
 	
 	public static class Description {
-		String permArmure() {return "Restaure Armure +%s";}  
+		String permArmure() {return "Restaure Armure +%s";}
+		String increasingForce() {return "Force Grandissante +%s";}
 		
 	}
 	
@@ -1143,12 +1350,17 @@ public class Main {
 							public void endTurn(Monster m, World w) {
 								m.force++;
 							}
+
+							@Override
+							public String description() {
+								return "Force continue +1";//String.format(descriptions.permArmure(), value);
+							}
 						});
 					})
 			), List.of(
 					MonsterBrain.attack(10),
 					MonsterBrain.mental((m, w) -> {
-						w.hero.deck.add(deck.blob.carte());
+						w.deck(deck.blob.carte(), m);
 					}),
 					MonsterBrain.attack(10)
 			))));
@@ -1158,26 +1370,34 @@ public class Main {
 						m.effects.add(new Effects() {
 							@Override
 							public void endTurn(Monster m, World w) {
-								m.armure+=2;
+								m.armure(2, m, w);
 							}
-							
+
+							@Override
+							public String description() {
+								return "Perm-armure 2";
+							}
 						});
+						w.describe(new ActionBuff(m, m, List.of(new CustomActionEffect(ActionEffectType.CUSTOM, 2, "ImproveArmure"))));
 					})
 			), List.of(
 					MonsterBrain.attack(10)
 			))), new Monster("Mac", 30, MonsterStrategy.simpleStrategy(List.of(
-					MonsterBrain.buff((m, w) -> w.monsters.forEach(x -> x.force++))
+					MonsterBrain.buff((m, w) -> w.monsters.forEach(x -> {
+						x.force += 1;
+						w.describe(new ActionBuff(m, x, List.of(new ActionEffect(ActionEffectType.FORCE, 1))));
+					}))
 			))));
 
 			List<Monster> soldatFou = List.of(new Monster("Soldat fou", 50, MonsterStrategy.simpleStrategy(List.of(
 					MonsterBrain.attack(10),
 					MonsterBrain.buff((m, w) -> {
-						m.vulnerability = 0;
-						m.force += 1;
+						m.vulnerability(-m.vulnerability, m, w);
+						m.force(1, w);
 					}),
 					MonsterBrain.mental((m, w) -> {
-						w.hero.vulnerability += 3;
-						w.hero.faiblesse += 3;
+						w.hero.vulnerability(3, m, w);
+						w.hero.faiblesse(3, m, w);
 					})
 			))));
 
@@ -1186,15 +1406,15 @@ public class Main {
 						m.effects.add(new Effects() {
 							@Override
 							public void endTurn(Monster m, World w) {
-								w.hero.faiblesse++;
-								m.vulnerability = 0;
+								w.hero.faiblesse(2, m, w);
+								m.vulnerability(-m.vulnerability, m, w);
 							}
 						});
 					})
 			), List.of(
 					MonsterBrain.attack(10),
 					MonsterBrain.mental((m, w) -> {
-						w.hero.deck.add(deck.blob.carte());
+						w.deck(deck.blob.carte(), m);
 					})
 			))));
 
@@ -1203,30 +1423,53 @@ public class Main {
 			return allMonsters.get(random(allMonsters.size()));
 		}
 
+
+		private String dumbName(String from, int l, int seed) {
+			String r = "";
+			Random random= new Random(seed);
+			for (int i = 0; i < l; i++) {
+				r+=from.charAt(random.nextInt(from.length()));
+			}
+			return r;
+		}
 		public List<Monster> createEliteMonsters() {
+			Random nameGuepeRandom = new Random(443134);
+			Supplier<String> nameGuepe = () -> dumbName("xXwWsSzZ17", 4, nameGuepeRandom.nextInt());
 			IntFunction<Monster> guepeSupplier = g -> new Monster("Guepe", 10, MonsterStrategy.simpleStrategy(List.of(
 					MonsterBrain.block((m, w) -> {
-						w.monsters.forEach(x -> x.armure += 1);
+						w.monsters.forEach(x -> x.armure(1, m, w));
 					}),
 					MonsterBrain.attack(10),
 					MonsterBrain.buff((m, w) -> {
-						w.monsters.forEach(x -> x.force += 1);
+						w.monsters.forEach(x -> x.force(1, m, w));
 					}),
 					MonsterBrain.attack(10)
 					)
-			, g));
+			, g)).effect(new Effects() {
+				@Override
+				public String description() {
+					return "Sbire";
+				}
+			});
 			Monster reine = new Monster("Reine", 30, MonsterStrategy.simpleStrategy(List.of(
 					MonsterBrain.block((m, w) -> {
-						m.armure += 5;
+						m.armure(5, m, w);
 					}),
 					MonsterBrain.attack(15),
 					MonsterBrain.buff((m, w) -> {
-						w.monsters.forEach(x -> x.force += 2);
+						w.monsters.forEach(x -> x.force(2, w));
 					}),
 					MonsterBrain.mental((m, w) -> {
-						w.monsters.add(guepeSupplier.apply(random(4)));
+						w.monsters(guepeSupplier.apply(random(4)), m);
 					})
-			)));
+			))).effect(new HiddenEffects() {
+				@Override
+				public void onDeath(Monster m, World w) {
+					w.monsters.clear();
+				}
+
+
+			});
 			List<Monster> guepes = List.of(reine, guepeSupplier.apply(0), guepeSupplier.apply(1), guepeSupplier.apply(2));
 			
 			List<Monster> marteau = List.of(new Monster("Marteau", 60, MonsterStrategy.prepareAndThensimpleStrategy(List.of(
@@ -1234,12 +1477,12 @@ public class Main {
 						m.effects.add(new Effects() {
 							@Override
 							public void startTurn(Monster m, World w) {
-								m.faiblesse = 0;
+								m.faiblesse(-m.faiblesse, m, w);
 							}
 							@Override
 							public void endTurn(Monster m, World w) {
-								m.faiblesse = 0;
-								m.force+=2;
+								m.faiblesse(-m.faiblesse, m, w);
+								m.force(2, w);
 							}
 						});
 					})
@@ -1256,6 +1499,19 @@ public class Main {
 	
 	
 	
+	public static void main0(String[] args) throws IOException {
+		int seed= 16486744;
+		WorldDeck deck = new WorldDeck();
+		WorldBestiaire bestiaire = new WorldBestiaire(deck);
+
+		MapGenerator generator = new MapGenerator(seed, 0, deck, bestiaire);
+		for (int i = 0; i < 10; i++) {
+
+			MapWorld map = generator.createMap();
+			displayMap(map.all, map.links, "a"+i);
+		}
+
+	}
 	public static void main(String[] args) throws IOException {
 		WorldDeck deck = new WorldDeck();
 		WorldBestiaire bestiaire = new WorldBestiaire(deck);
@@ -1313,8 +1569,14 @@ public class Main {
 	}
 
 	private static void displayMap(List<List<Node>> all, Map<Node, List<Node>> links) {
-		displayMap(all, links, Collections.emptyList(), Collections.emptyList(), "ex1");
+		String fname = "ex1";
+		displayMap((List<List<Node>>) all, (Map<Node, List<Node>>) links, fname);
 	}
+
+	private static void displayMap(List<List<Node>> all, Map<Node, List<Node>> links, String fname) {
+		displayMap(all, links, Collections.emptyList(), Collections.emptyList(), fname);
+	}
+
 	private static void displayMap(List<List<Node>> all, Map<Node, List<Node>> links, List<Node> highlight, List<Node> crossed, String fname) {
 		List<LinkSource> linksSource = new ArrayList<>();
 		
@@ -1588,7 +1850,16 @@ public class Main {
 
 			boolean allPathHasShop = false;
 			while (!allPathHasShop) {
-				inside.get(randomMap(inside.size())).type = NodeType.SHOP;
+				{
+					Function<Node, Predicate<Node>> predicate  =m -> x -> links.get(x).contains(m) && x.type == NodeType.SHOP;
+
+					Node n = inside.get(randomMap(inside.size()));
+					while (links.get(n).stream().anyMatch(x -> x.type == NodeType.COFFRE)
+							|| links.keySet().stream().anyMatch(predicate.apply(n))) {
+						n = inside.get(randomMap(inside.size()));
+					}
+					n.type = NodeType.SHOP;
+				}
 				allPathHasShop = true;
 				for (Node startingNode : starting) {
 					boolean pathHasShop = false;
@@ -1618,18 +1889,20 @@ public class Main {
 			}
 
 			for (int i = 0; i < 5; i++) {
-
 				Node n = inside.get(randomMap(inside.size()));
 				while (n.type != NodeType.MONSTER) {
 					n = inside.get(randomMap(inside.size()));
+
 				}
 				n.type = NodeType.ELITE;
 			}
 
 			for (int i = 0; i < 4; i++) {
-
 				Node n = inside.get(randomMap(inside.size()));
-				while (n.type != NodeType.MONSTER) {
+				Function<Node, Predicate<Node>> predicate  =m -> x -> links.get(x).contains(m) && x.type == NodeType.REPOS;
+				while (n.type != NodeType.MONSTER
+						|| links.get(n).stream().anyMatch(x -> x.type == NodeType.REPOS)
+						|| links.keySet().stream().anyMatch(predicate.apply(n))) {
 					n = inside.get(randomMap(inside.size()));
 				}
 				n.type = NodeType.REPOS;
@@ -1642,16 +1915,26 @@ public class Main {
 				}
 				n.type = NodeType.ENIGME;
 			}
+			for (int i = 0; i < 1; i++) {
+				Node n = inside.get(randomMap(inside.size()));
+				Function<Node, Predicate<Node>> predicate  =m -> x -> links.get(x).contains(m) && x.type == NodeType.COFFRE;
+				while (n.type != NodeType.MONSTER
+						|| links.get(n).stream().anyMatch(x -> x.type == NodeType.COFFRE)
+						|| links.keySet().stream().anyMatch(predicate.apply(n))) {
+					n = inside.get(randomMap(inside.size()));
+				}
+				n.type = NodeType.COFFRE;
+			}
 			all.get(all.size()-2).forEach(x -> x.type = NodeType.REPOS);
 		}
 
 		private  List<List<Node>> generateNodes() {
 			List<List<Node>> all = new ArrayList<>();
-			int steps = 12;
+			int steps = 15;
 			all.add(List.of(new Node("A", level, 0), new Node("B", level, 1), new Node("C", level, 2)));
 			int n = 0;
 			for (int i = 0; i < steps; i++) {
-				int nbNode = randomMap(4) + 2;
+				int nbNode = randomMap(2) + 3;
 				List<Node> nodes = new ArrayList<>();
 				for (int j = 0; j < nbNode; j++) {
 					nodes.add(new Node((++n)+"", level, j));
@@ -1666,6 +1949,7 @@ public class Main {
 			return all;
 		}
 
+		private int sq(int x) { return  x*x;}
 		private  Map<Node, List<Node>> generatePath(List<List<Node>> all) {
 			Map<Node, Set<Node>> links = new HashMap<>();
 			Set<Node> allNode = all.stream().flatMap(List::stream).collect(Collectors.toSet());
@@ -1682,17 +1966,29 @@ public class Main {
 				}
 
 				if (!allNode.contains(nodeFrom) || !allNode.contains(nodeTo)) {
-					if (randomMap(100) > 5)
+					if (randomMap(100) > 1)
 						continue;
 				}
 
-				double r_min = (from - 1.) / all.get(fromLayer).size();
-				double r_max = (from + 1.) / all.get(fromLayer).size();
+				if (randomMap(100)  < sq(links.getOrDefault(nodeFrom, Collections.emptySet()).size()) *  6) {
+					continue;
+				}
 
-				double x_min = ((double) to - 1.) / all.get(fromLayer + 1).size();
-				double x_max = ((double) to + 1.) / all.get(fromLayer + 1).size();
+				if (randomMap(100)  < sq((int) links.values().stream().filter(x -> x.contains(nodeTo)).count()) *  6) {
+					continue;
+				}
 
-				boolean possible = (x_min >= r_min && x_min <= r_max) || (x_max >= r_min && x_max <= r_max) || (randomMap(100) >90);
+				if (randomMap(100)  > 1 && links.values().stream().filter(x -> x.contains(nodeTo)).count() > 2) {
+					continue;
+				}
+
+				double r_min = (from - 0.5) / all.get(fromLayer).size();
+				double r_max = (from + 0.5) / all.get(fromLayer).size();
+
+				double x_min = ((double) to - 0.5) / all.get(fromLayer + 1).size();
+				double x_max = ((double) to + 0.5) / all.get(fromLayer + 1).size();
+
+				boolean possible = (x_min >= r_min && x_min <= r_max) || (x_max >= r_min && x_max <= r_max) || (randomMap(100) >95);
 				for (int j = 0; j < from; j++) {
 					Set<Node> p = links.getOrDefault(all.get(fromLayer).get(j), Collections.emptySet());
 					for (Node n : p) {
@@ -1717,7 +2013,7 @@ public class Main {
 
 				for (Node node : new HashSet<>(allNode)) {
 					if (links.values().stream().flatMap(Set::stream).anyMatch(n -> n == node) 
-							|| node.title.equals("A")|| node.title.equals("B")|| node.title.equals("C")) {
+							|| node.title.equals("A")|| node.title.equals("B")|| node.title.equals("C") || node.title.equals("D") || node.title.equals("E")) {
 						if (links.containsKey(node) || node.title.equals("X")) {
 							allNode.remove(node);
 						}
