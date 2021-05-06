@@ -421,6 +421,7 @@ public class Main {
 		
 		List<Monster> monsters= new ArrayList<>();
 		Map<Monster, MonsterBrain> intentions = new HashMap<>();
+		boolean firstTurn = false;
 		List<BiConsumer<Carte<?>, World>> beforePlay = new ArrayList<>();
 		List<BiConsumer<Carte<?>, World>> afterPlay = new ArrayList<>();
 		List<IntUnaryOperator> attackStack = new ArrayList<>();
@@ -472,6 +473,10 @@ public class Main {
 				shopItems = new ArrayList<>(position.items());
 				startShop();
 			}
+			else if (position.type == NodeType.COFFRE) {
+				shopItems = new ArrayList<>(position.items());
+				startCoffre();
+			}
 			else if (position.type == NodeType.REPOS) {
 				hero.pv = Math.min(hero.maxPv, hero.pv + (hero.maxPv / 3+2));
 			}
@@ -482,6 +487,21 @@ public class Main {
 			endPlayable = () -> {};
 		}
 		
+		public void startCoffre() {
+			state = WorldState.ChoseReward;
+			endPlayable = () -> World.this.state = WorldState.Map;
+		}
+		
+		public void startChooseReward() {
+			state = WorldState.ChoseReward;
+
+			hero.winGold(random(25) + 25);
+			shopItems = new ArrayList<>(position.items());
+			
+			endPlayable = () -> World.this.state = WorldState.Map;
+		}
+		
+		
 		public void playChooseItem(ItemShop item) {
 			if (item.price(this) <= hero.gold) {
 				hero.gold -= item.price(this);
@@ -489,7 +509,7 @@ public class Main {
 				shopItems.remove(item);
 				currentPlayable = bought;
 				currentPlayable.type().handle(this);
-				endPlayable.run();
+				//endPlayable.run();
 			}
 		}
 
@@ -555,6 +575,7 @@ public class Main {
 			endPlayable = this::afterPlay;
 			beforePlay.clear();
 			afterPlay.clear();
+			firstTurn = true;
 		}
 		
 		public void startTurn() {
@@ -565,7 +586,7 @@ public class Main {
 			
 			hero.hand.add(deck.endTurn());
 			
-			for (int i = 0; i < hero.handSize; i++) {
+			for (int i = 0; i < hero.handSize + (firstTurn ? 2 : 0); i++) {
 				hero.drawCard();
 			}
 			for (Monster m : monsters) {
@@ -573,6 +594,7 @@ public class Main {
 					m.brain.prepareTurn(this, m);
 				}
 			}
+			firstTurn = false;
 			monstersIntentions();
 		}
 
@@ -624,9 +646,10 @@ public class Main {
 
 		private void checkEndFight() {
 			List<Monster> killed = new ArrayList<>();
-			for (Monster m : monsters) {
+			for (Monster m : new ArrayList<>(monsters)) {
 				if (m.pv <= 0) {
 					m.effects.forEach(e -> e.onDeath(m, this));
+					describe(new ActionDeath(m));
 					killed.add(m);
 				}
 			}
@@ -643,15 +666,6 @@ public class Main {
 			afterPlay.clear();
 			
 			startChooseReward();
-		}
-
-		public void startChooseReward() {
-			state = WorldState.ChoseReward;
-
-			hero.winGold(random(25) + 25);
-			shopItems = new ArrayList<>(position.items());
-			
-			endPlayable = () -> World.this.state = WorldState.Map;
 		}
 
 		public void playCard(Carte<?> carte) {
@@ -857,7 +871,7 @@ public class Main {
 
 				@Override
 				public Playable<?> buy(World world) {
-					return Playable.solo(w -> w.hero.deck.add(carte));
+					return Playable.solo(w -> w.deck(carte, w.hero));
 				}
 
 				@Override
@@ -966,6 +980,10 @@ public class Main {
 								actionBuff.effects.stream().map(e -> describe(e))
 										.collect(Collectors.joining(", ","{", "}")));
 					}
+					else if (a instanceof ActionDeath) {
+						ActionDeath actionDeath = (ActionDeath) a;
+						System.out.println(actionDeath.origin.name() + " Died");
+					}
 				});
 			}
 
@@ -983,7 +1001,7 @@ public class Main {
 			if (world.inMap()) {
 				List<Node> nexts = world.map.links.get(world.position);
 				visited.add(world.position);
-				displayMap(world.map.all, world.map.links, nexts, visited, dpath);
+				displayMap(world.map.all, world.map.links, nexts, visited, mpath);
 				System.out.println("Map => "+mpath);
 				for (int i = 0; i< nexts.size(); i++) {
 					System.out.println(i+") " + nexts.get(i).title);
@@ -1009,7 +1027,7 @@ public class Main {
 				List<Carte<?>> hand = world.hero.hand;
 				System.out.println(world.hero.energy + "/" + world.hero.startEnergy);
 				for (int j = 0; j < hand.size(); j++) {
-					System.out.println((j) + ") "+ (hand.get(j).type != CarteType.GAME ? "["+ hand.get(j).cost +"] ":"") + hand.get(j).name);
+					System.out.println((j) + ") "+ (hand.get(j).type != CarteType.GAME ? "["+ hand.get(j).cost +"] {"+hand.get(j).type+"} ":"") + hand.get(j).name);
 				}
 			}
 			if (world.state == WorldState.ContextMonster) {
@@ -1035,15 +1053,12 @@ public class Main {
 
 		private String describe(ActionEffect e) {
 			if (e instanceof CustomActionEffect) {
-				CustomActionEffect customActionEffect = (CustomActionEffect) e;
 				return ((CustomActionEffect) e).desc + " " + e.amount;
 			}
 			else if (e instanceof CarteActionEffect) {
-				CarteActionEffect customActionEffect = (CarteActionEffect) e;
 				return ((CarteActionEffect) e).desc.name;
 			}
 			else if (e instanceof SpawnMonsterActionEffect) {
-				SpawnMonsterActionEffect customActionEffect = (SpawnMonsterActionEffect) e;
 				return ((SpawnMonsterActionEffect) e).desc.name();
 			}
 			return e.type + " " + e.amount;
@@ -1196,13 +1211,25 @@ public class Main {
 	}
 	
 	
+	static class ActionDeath extends Action {
+		Personnage origin;
+		
+		
+		public ActionDeath(Personnage origin) {
+			this.origin = origin;
+		}
+	}
+	
+	
 	
 	public static class WorldDeck {
 		
 		private final List<CarteDeck> deck = new ArrayList<>();
 		private final CarteDeck blob;
 		private final CarteDeck blessure;
-		private final Effects marque = new Effects() {};
+		private final Effects marque = new Effects() {
+			public String description() {return "Marque";};
+		};
 		
 		private final CarteDeck startAttack;
 		private final CarteDeck startDefense;
@@ -1235,9 +1262,9 @@ public class Main {
 			carte(10, CarteType.ARMURE,1, CarteClass.RARE, "Ninja (+5 armure par attaque)", Playable.solo(w -> {w.afterPlay.add((c,z)->{if (c.type == CarteType.ATTACK) {w.hero.armure+=5;};});}));
 			carte(10, CarteType.ARMURE,1, CarteClass.RARE, "BlockAttack (attaque de l'armure)", Playable.monster((w, m) -> {w.attackMonster(m, w.hero.armure);}));
 			carte(12, CarteType.ATTACK,1, CarteClass.COMMON, "Sacrifice (Attack (10) + une blessure)", Playable.monster((w, m) -> {w.attackMonster(m, 10); w.hero.deck.add(blessure.carte());}));
-			carte(13, CarteType.POWER,1, CarteClass.COMMON, "Marques (+5 marques à tous)", Playable.solo((w) -> {w.monsters.forEach(m -> IntStream.range(0, 5).forEach(__ -> m.effects.add(marque)));}));
+			carte(13, CarteType.POWER,1, CarteClass.COMMON, "Marques (+2 marques à tous)", Playable.solo((w) -> {w.monsters.forEach(m -> IntStream.range(0, 2).forEach(__ -> m.effects.add(marque)));}));
 			carte(14, CarteType.POWER,1, CarteClass.COMMON, "Marques (x2)", Playable.monster((w, m) -> {IntStream.range(0, (int) m.effects.stream().filter(e -> e == marque).count()).forEach(__ -> m.effects.add(marque));}));
-			carte(15, CarteType.POWER,2, CarteClass.COMMON, "x5 Attaques / Marque", Playable.monster((w, m) -> {w.attackMonster(m, (int) m.effects.stream().filter(e -> e == marque).count());}));
+			carte(15, CarteType.POWER,2, CarteClass.COMMON, "x5 Attaques / Marque", Playable.monster((w, m) -> {m.effects.stream().filter(e -> e == marque).forEach(__ -> w.attackMonster(m, 5));}));
 
 
 		}
@@ -1770,7 +1797,7 @@ public class Main {
 		
 		private void levelUpMonsters(Node node, List<Monster> monsters) {
 			for (Monster m : monsters) {
-				m.originPv(m.originPv * (node.level + 1) + node.h);
+				m.originPv((int) (m.originPv * (node.level + 1)/2. + node.h));
 			}
 		}
 	}
@@ -1830,8 +1857,10 @@ public class Main {
 						n.setReward(reward);
 					}
 					else if (n.type == NodeType.SHOP) {
-						List<Monster> monsters = elements.createElite(n);
-						n.setMonsters(() -> monsters);
+						List<ItemShop> items = elements.createShop(n);
+						n.setReward(new Reward(0, () -> items));
+					}
+					else if (n.type == NodeType.COFFRE) {
 						List<ItemShop> items = elements.createShop(n);
 						n.setReward(new Reward(0, () -> items));
 					}
