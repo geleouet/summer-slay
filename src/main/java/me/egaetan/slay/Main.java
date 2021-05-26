@@ -565,6 +565,7 @@ public class Main {
 
 		public void startFight() {
 			state = WorldState.Fight;
+			describe.add(new ActionStatus("StartFight"));
 			shuffle(hero.deck);
 			for (Carte<?> c : hero.deck) c.resetCost();
 			intentions.clear();
@@ -664,11 +665,12 @@ public class Main {
 			hero.resetDeck();
 			beforePlay.clear();
 			afterPlay.clear();
-			
+			describe.add(new ActionStatus("EndFight"));
 			startChooseReward();
 		}
 
 		public void playCard(Carte<?> carte) {
+			describe.clear();
 			if (hero.energy >= carte.cost && carte.type != CarteType.UNPLAYABLE && hero.hand.remove(carte)) {
 				hero.energy -= carte.cost;
 				
@@ -984,6 +986,10 @@ public class Main {
 						ActionDeath actionDeath = (ActionDeath) a;
 						System.out.println(actionDeath.origin.name() + " Died");
 					}
+					else if (a instanceof ActionStatus) {
+						ActionStatus actionStatus = (ActionStatus) a;
+						System.out.println(actionStatus.desc);
+					}
 				});
 			}
 
@@ -1220,6 +1226,14 @@ public class Main {
 		}
 	}
 	
+	static class ActionStatus extends Action {
+		String desc;
+		
+		
+		public ActionStatus(String desc) {
+			this.desc = desc;
+		}
+	}
 	
 	
 	public static class WorldDeck {
